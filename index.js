@@ -1,58 +1,62 @@
 'use strict'
 
-
 const AWS = require('aws-sdk')
 const S3 = new AWS.S3({signatureVersion: 'v4'});
 const Sharp = require('sharp');
 const PathPattern = new RegExp("(.*/)?(.*)/(.*)");
 
 // parameters
-const {BUCKET, URL} = process.env
+const { BUCKET, URL, CACHE_CONTROL } = process.env;
 
 
 exports.handler = function(event, _context, callback) {
-    var path = event.queryStringParameters.path;
-    var parts = PathPattern.exec(path);
-    var dir = parts[1] || '';
-    var options = parts[2].split('_');
-    var filename = parts[3];
+    const path = event.queryStringParameters.path;
+    const parts = PathPattern.exec(path);
+    const dir = parts[1] || '';
+    const options = parts[2].split('_');
+    const filename = parts[3];
 
 
-    var sizes = options[0].split("x");
-    var action = options.length > 1 ? options[1] : null;
+    const sizes = options[0].split("x");
+    const action = options.length > 1 ? options[1] : null;
+    const allowActions = ['min', 'max', 'contain'];
 
-    if (action && action !== 'max' && action !== 'min') {
+    if (action && allowActions.indexOf(action) === -1) {
         callback(null, {
             statusCode: 400,
             body: `Unknown func parameter "${action}"\n` +
-                  'For query ".../150x150_func", "_func" must be either empty, "_min" or "_max"',
+                  'For query ".../150x150_func", "_func" must be either empty, "_min", "_max" or "contain".',
             headers: {"Content-Type": "text/plain"}
         });
         return;
     }
 
-    var contentType;
-    S3.getObject({Bucket: BUCKET, Key: dir + filename})
+    let contentType;
+    S3.getObject({ Bucket: BUCKET, Key: dir + filename })
         .promise()
         .then(data => {
             contentType = data.ContentType;
-            var width = sizes[0] === 'AUTO' ? null : parseInt(sizes[0]);
-            var height = sizes[1] === 'AUTO' ? null : parseInt(sizes[1]);
-            var fit;
+            const width = sizes[0] === 'AUTO' ? null : parseInt(sizes[0]);
+            const height = sizes[1] === 'AUTO' ? null : parseInt(sizes[1]);
+            let fit;
             switch (action) {
                 case 'max':
                     fit = 'inside';
                     break;
                 case 'min':
                     fit = 'outside';
-                    break
+                    break;
+                case 'contain':
+                    fit = 'contain';
+                    break;
                 default:
                     fit = 'cover';
                     break;
             }
-            var options = {
+            const options = {
                 withoutEnlargement: true,
-                fit
+                fit,
+                background: 'white',
             };
             return Sharp(data.Body)
                 .resize(width, height, options)
@@ -64,20 +68,21 @@ exports.handler = function(event, _context, callback) {
                 Body: result,
                 Bucket: BUCKET,
                 ContentType: contentType,
-                Key: path
+                Key: path,
+                CacheControl: CACHE_CONTROL,
             }).promise()
         )
         .then(() =>
             callback(null, {
                 statusCode: 301,
-                headers: {"Location" : `${URL}/${path}`}
+                headers: { "Location": `${URL}/${path}` },
             })
         )
-        .catch(e => {
+        .catch(e => 
             callback(null, {
                 statusCode: e.statusCode || 400,
                 body: 'Exception: ' + e.message,
-                headers: {"Content-Type": "text/plain"}
+                headers: { "Content-Type": "text/plain" },
             })
-        });
+        );
 }
